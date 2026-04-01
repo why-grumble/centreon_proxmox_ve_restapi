@@ -243,7 +243,8 @@ $fatpacked{"apps/proxmox/ve/restapi/custom/api.pm"} = '#line '.(1+__LINE__).' "'
               Type => $type,
               Vmid => $vmid,
               Node => $vm->{node},
-              Name => $vm->{name}
+              Name => $vm->{name},
+              Tags => defined($vm->{tags}) ? $vm->{tags} : ''
           };
       }
   
@@ -305,11 +306,12 @@ $fatpacked{"apps/proxmox/ve/restapi/custom/api.pm"} = '#line '.(1+__LINE__).' "'
           $vms = {};
           my $list_vms = $self->internal_api_list_vms();
           foreach my $vm (@$list_vms) {
-              $vms->{$vm->{id}} = {
-                  State => $vm->{status},
-                  Node => $vm->{node},
-                  Name => $vm->{name}
-              };
+            $vms->{$vm->{id}} = {
+                State => $vm->{status},
+                Node => $vm->{node},
+                Name => $vm->{name},
+                Tags => defined($vm->{tags}) ? $vm->{tags} : ''
+            };
           }
           $options{statefile}->write(data => $vms);
       }
@@ -515,6 +517,14 @@ $fatpacked{"apps/proxmox/ve/restapi/custom/api.pm"} = '#line '.(1+__LINE__).' "'
               # Apply inclusion/exclusion filters here to avoid unnecessary api_get_vm_stats calls
               if ($options{filter_name} ne '' && $vm_data->{Name} !~ /$options{filter_name}/) {
                   $self->{output}->output_add(long_msg => "skipping  '" . $vm_data->{Name} . "': no including filter match.", debug => 1);
+                  next;
+              }
+              if ($options{filter_tags} ne '' && (!defined($vm_data->{Tags}) || $vm_data->{Tags} !~ /$options{filter_tags}/)) {
+                  $self->{output}->output_add(long_msg => "skipping  '" . $vm_data->{Name} . "': no tags filter match.", debug => 1);
+                  next;
+              }
+              if ($options{exclude_tags} ne '' && defined($vm_data->{Tags}) && $vm_data->{Tags} =~ /$options{exclude_tags}/) {
+                  $self->{output}->output_add(long_msg => "skipping  '" . $vm_data->{Name} . "': tags exclusion filter match.", debug => 1);
                   next;
               }
               if ($options{include_node_name} ne '' && $vm_data->{Node} !~ /$options{include_node_name}/) {
@@ -724,6 +734,7 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/discovery.pm"} = '#line '.(1+__LINE__).
           $vm->{name} = $vms->{$vm_id}->{Name};
           $vm->{state} = $vms->{$vm_id}->{State};
           $vm->{node_name} = $vms->{$vm_id}->{Node};
+          $vm->{tags} = $vms->{$vm_id}->{Tags};
   
           my ($network_ips, $network_interfaces, $osinfo);
   
@@ -1075,7 +1086,13 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/listvms.pm"} = '#line '.(1+__LINE__).' 
       my $self = $class->SUPER::new(package => __PACKAGE__, %options);
       bless $self, $class;
   
-      $options{options}->add_options(arguments => {});
+      $options{options}->add_options(arguments => {
+          'filter-name:s'   => { name => 'filter_name', default => '' },
+          'exclude-name:s'  => { name => 'exclude_name', default => '' },
+          'filter-tags:s'   => { name => 'filter_tags', default => '' },
+          'exclude-tags:s'  => { name => 'exclude_tags', default => '' },
+          'node-name:s'     => { name => 'node_name', default => '' },
+      });
   
       return $self;
   }
@@ -1088,7 +1105,44 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/listvms.pm"} = '#line '.(1+__LINE__).' 
   sub manage_selection {
       my ($self, %options) = @_;
   
-      $self->{vms} = $options{custom}->api_list_vms();
+      my $all_vms = $options{custom}->api_list_vms();
+      $self->{vms} = {};
+  
+      foreach my $vm_id (keys %{$all_vms}) {
+          my $vm = $all_vms->{$vm_id};
+  
+          if (defined($self->{option_results}->{filter_name}) &&
+              $self->{option_results}->{filter_name} ne '' &&
+              $vm->{Name} !~ /$self->{option_results}->{filter_name}/) {
+              next;
+          }
+  
+          if (defined($self->{option_results}->{exclude_name}) &&
+              $self->{option_results}->{exclude_name} ne '' &&
+              $vm->{Name} =~ /$self->{option_results}->{exclude_name}/) {
+              next;
+          }
+  
+          if (defined($self->{option_results}->{filter_tags}) &&
+              $self->{option_results}->{filter_tags} ne '' &&
+              (!defined($vm->{Tags}) || $vm->{Tags} !~ /$self->{option_results}->{filter_tags}/)) {
+              next;
+          }
+  
+          if (defined($self->{option_results}->{exclude_tags}) &&
+              $self->{option_results}->{exclude_tags} ne '' &&
+              defined($vm->{Tags}) && $vm->{Tags} =~ /$self->{option_results}->{exclude_tags}/) {
+              next;
+          }
+  
+          if (defined($self->{option_results}->{node_name}) &&
+              $self->{option_results}->{node_name} ne '' &&
+              $vm->{Node} !~ /$self->{option_results}->{node_name}/) {
+              next;
+          }
+  
+          $self->{vms}->{$vm_id} = $vm;
+      }
   }
   
   sub run {
@@ -1100,7 +1154,8 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/listvms.pm"} = '#line '.(1+__LINE__).' 
               "[node = '" . $self->{vms}->{$vm_id}->{Node} . "']" .
               "[state = '" . $self->{vms}->{$vm_id}->{State} . "']" .
               "[vmid = '" . $self->{vms}->{$vm_id}->{Vmid} . "']" .
-              "[type = '" . $self->{vms}->{$vm_id}->{Type} . "']"
+              "[type = '" . $self->{vms}->{$vm_id}->{Type} . "']" .
+              "[tags = '" . (defined($self->{vms}->{$vm_id}->{Tags}) ? $self->{vms}->{$vm_id}->{Tags} : '') . "']"
           );
       }
   
@@ -1113,7 +1168,7 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/listvms.pm"} = '#line '.(1+__LINE__).' 
   sub disco_format {
       my ($self, %options) = @_;
   
-      $self->{output}->add_disco_format(elements => ['id', 'name', 'node' ,'state','type','vmid']);
+      $self->{output}->add_disco_format(elements => ['id', 'name', 'node' ,'state','type','vmid','tags']);
   }
   
   sub disco_show {
@@ -1128,6 +1183,7 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/listvms.pm"} = '#line '.(1+__LINE__).' 
               id => $vm_id,
               type => $self->{vms}->{$vm_id}->{Type},
               vmid =>$self->{vms}->{$vm_id}->{Vmid},
+              tags => $self->{vms}->{$vm_id}->{Tags},
           );
       }
   }
@@ -1179,7 +1235,10 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/nodeusage.pm"} = '#line '.(1+__LINE__).
   sub custom_status_output {
       my ($self, %options) = @_;
   
-      return 'state: ' . $self->{result_values}->{state};
+      return 'state : ' . $self->{result_values}->{state} .
+          (defined($self->{result_values}->{tags}) && $self->{result_values}->{tags} ne ''
+              ? ' [tags: ' . $self->{result_values}->{tags} . ']'
+              : '');
   }
   
   sub custom_cpu_calc {
@@ -1360,7 +1419,7 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/nodeusage.pm"} = '#line '.(1+__LINE__).
   
       $self->{maps_counters}->{nodes} = [
           { label => 'node-status', type => 2, set => {
-                  key_values => [ { name => 'state' }, { name => 'name' } ],
+                  key_values => [ { name => 'state' }, { name => 'name' }, { name => 'tags' } ],
                   closure_custom_output => $self->can('custom_status_output'),
                   closure_custom_perfdata => sub { return 0; },
                   closure_custom_threshold_check => \&catalog_status_threshold_ng
@@ -1413,7 +1472,7 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/nodeusage.pm"} = '#line '.(1+__LINE__).
           'node-id:s'     => { name => 'node_id' },
           'node-name:s'   => { name => 'node_name' },
           'filter-name:s' => { name => 'filter_name' },
-          'use-name'      => { name => 'use_name' }
+          'use-name'      => { name => 'use_name' },
       });
   
       $self->{statefile_cache_nodes} = centreon::plugins::statefile->new(%options);
@@ -2017,7 +2076,7 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/vmusage.pm"} = '#line '.(1+__LINE__).' 
   
       $self->{maps_counters}->{vms} = [
            { label => 'vm-status', type => 2, set => {
-                  key_values => [ { name => 'state' }, { name => 'name' } ],
+                  key_values => [ { name => 'state' }, { name => 'name' }, { name => 'tags' } ],
                   closure_custom_output => $self->can('custom_status_output'),
                   closure_custom_perfdata => sub { return 0; },
                   closure_custom_threshold_check => \&catalog_status_threshold_ng
@@ -2096,6 +2155,8 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/vmusage.pm"} = '#line '.(1+__LINE__).' 
           'vm-name:s'           => { name => 'vm_name',           default => '' },
           'filter-name:s'       => { name => 'filter_name',       default => '' },
           'exclude-name:s'      => { name => 'exclude_name',      default => '' },
+          'filter-tags:s'       => { name => 'filter_tags',       default => '' },
+          'exclude-tags:s'      => { name => 'exclude_tags',      default => '' },
           'include-node-name:s' => { name => 'include_node_name', default => '' },
           'exclude-node-name:s' => { name => 'exclude_node_name', default => '' },
           'use-name'            => { name => 'use_name' }
@@ -2120,6 +2181,8 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/vmusage.pm"} = '#line '.(1+__LINE__).' 
           vm_name => $self->{option_results}->{vm_name},
           filter_name => $self->{option_results}->{filter_name},
           exclude_name => $self->{option_results}->{exclude_name},
+          filter_tags => $self->{option_results}->{filter_tags},
+          exclude_tags => $self->{option_results}->{exclude_tags},
           include_node_name => $self->{option_results}->{include_node_name},
           exclude_node_name => $self->{option_results}->{exclude_node_name},
           statefile => $self->{statefile_cache_vms}
@@ -2137,6 +2200,7 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/vmusage.pm"} = '#line '.(1+__LINE__).' 
               display => defined($self->{option_results}->{use_name}) ? $vm_name : $vm_id,
               name => $vm_name,
               state => $result->{$vm_id}->{State},
+              tags => $result->{$vm_id}->{Tags},
               read_io => $result->{$vm_id}->{Stats}->{diskread},
               write_io => $result->{$vm_id}->{Stats}->{diskwrite},
               cpu_total_usage => $result->{$vm_id}->{Stats}->{cpu},
@@ -2161,6 +2225,8 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/vmusage.pm"} = '#line '.(1+__LINE__).' 
               (defined($self->{option_results}->{filter_counters}) ? $self->{option_results}->{filter_counters} : '') . '_' .
               (defined($self->{option_results}->{filter_name}) ? $self->{option_results}->{filter_name} : '') . '_' .
               (defined($self->{option_results}->{exclude_name}) ? $self->{option_results}->{exclude_name} : '') . '_' .
+              (defined($self->{option_results}->{filter_tags}) ? $self->{option_results}->{filter_tags} : '') . '_' .
+              (defined($self->{option_results}->{exclude_tags}) ? $self->{option_results}->{exclude_tags} : '') . '_' .
               (defined($self->{option_results}->{include_node_name}) ? $self->{option_results}->{include_node_name} : '') . '_' .
               (defined($self->{option_results}->{vm_id}) ? $self->{option_results}->{vm_id} : '') . '_' .
               (defined($self->{option_results}->{vm_name}) ? $self->{option_results}->{vm_name} : '')
@@ -2231,6 +2297,14 @@ $fatpacked{"apps/proxmox/ve/restapi/mode/vmusage.pm"} = '#line '.(1+__LINE__).' 
   Define the conditions to match for the status to be CRITICAL (default: -).
   You can use the following variables: %{name}, %{state}.
   
+  =item B<--filter-tags>
+
+  Filter by virtual machine tags (can be a regexp).
+
+  =item B<--exclude-tags>
+
+  Exclude by virtual machine tags (can be a regexp).
+
   =back
   
   =cut
